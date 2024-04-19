@@ -1,0 +1,6 @@
+name = "info"
+version = "0.1"
+spin_compatibility = ">=2.0"
+license = "Apache-2.0"
+# TODO
+package = "./target/debug/spin-info"
