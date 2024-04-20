@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use crate::app_source::AppSource;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use spin_locked_app::{
+    locked::{LockedApp, LockedComponent, LockedMap, LockedTrigger},
+    values::ValuesMap,
+    Variable,
+};
 use spin_oci::OciLoader;
 use tempfile::TempDir;
 
@@ -38,13 +43,43 @@ impl InfoCommand {
             .load_app(&mut client, &app)
             .await?;
 
-        println!("{:?}", locked_app);
+        // println!("{:?}", locked_app);
 
-        // Pretty print the application metadata.
-        // We probably need a Rust library that handles terminal colors.
-        // https://github.com/colored-rs/colored looks like a good starting point.
+        self.print_metadata(&locked_app);
+
+        for t in &locked_app.triggers {
+            self.print_trigger(t);
+        }
+        self.print_variables(&locked_app.variables);
+        self.print_host_requirements(&locked_app.host_requirements);
+        for c in &locked_app.components {
+            self.print_component(c);
+        }
 
         Ok(())
+    }
+
+    fn print_metadata(&self, app: &LockedApp) {
+        println!("Application metadata: ");
+        for (k, v) in &app.metadata {
+            println!("      {}: {}", k, v);
+        }
+    }
+
+    fn print_trigger(&self, trigger: &LockedTrigger) {
+        println!("Trigger: {:?}", trigger);
+    }
+
+    fn print_variables(&self, variables: &LockedMap<Variable>) {
+        println!("Variables: {:?}", variables);
+    }
+
+    fn print_host_requirements(&self, requirements: &ValuesMap) {
+        println!("Host Requirements: {:?}", requirements);
+    }
+
+    fn print_component(&self, component: &LockedComponent) {
+        println!("{:?}", component);
     }
 
     pub async fn print_info_local(&self, app: PathBuf) -> Result<()> {

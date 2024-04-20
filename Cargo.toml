@@ -13,3 +13,4 @@ tracing-subscriber = { version = "0.3.7", features = ["env-filter"] }
 
 spin-common = { git = "https://github.com/fermyon/spin" }
 spin-oci = { git = "https://github.com/fermyon/spin" }
+spin-locked-app = { git = "https://github.com/fermyon/spin" }

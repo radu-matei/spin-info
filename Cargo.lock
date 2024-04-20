@@ -2479,6 +2479,7 @@ dependencies = [
  "anyhow",
  "clap",
  "spin-common",
+ "spin-locked-app",
  "spin-oci",
  "tempfile",
  "tokio",
