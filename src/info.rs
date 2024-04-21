@@ -1,18 +1,21 @@
-use std::path::PathBuf;
+use std::{os::unix::fs::MetadataExt, path::PathBuf};
 
 use crate::app_source::AppSource;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use human_bytes::human_bytes;
 use spin_locked_app::{
-    locked::{LockedApp, LockedComponent, LockedMap, LockedTrigger},
+    locked::{LockedComponent, LockedMap, LockedTrigger},
     values::ValuesMap,
     Variable,
 };
 use spin_oci::OciLoader;
 use tempfile::TempDir;
 
+/// Get information about a Spin applicaton's metadata.
 #[derive(Parser, Clone, Debug)]
 pub struct InfoCommand {
+    /// The application to display the information about.
     #[clap(name = "APPLICATION", short = 'f', long = "from", group = "source")]
     pub app_source: Option<String>,
 
@@ -25,8 +28,8 @@ impl InfoCommand {
     pub async fn run(self) -> Result<()> {
         let app = self.app_source();
         match app {
-            AppSource::File(app) => self.print_info_local(app).await,
             AppSource::OciRegistry(app) => self.print_info_registry(app).await,
+            AppSource::File(app) => self.print_info_local(app).await,
             _ => bail!("Spin Info plugin only supports file or registry applications."),
         }
     }
@@ -39,52 +42,142 @@ impl InfoCommand {
             .context("cannot create registry client")?;
 
         let working_dir = TempDir::with_prefix("spin-info-")?;
-        let locked_app = OciLoader::new(&working_dir.path())
+        let locked_app = OciLoader::new(working_dir.path())
             .load_app(&mut client, &app)
             .await?;
 
-        // println!("{:?}", locked_app);
+        self.print_metadata(&locked_app.metadata)?;
 
-        self.print_metadata(&locked_app);
-
+        println!("Application will be triggered by:");
         for t in &locked_app.triggers {
             self.print_trigger(t);
         }
         self.print_variables(&locked_app.variables);
         self.print_host_requirements(&locked_app.host_requirements);
         for c in &locked_app.components {
-            self.print_component(c);
+            self.print_component(c)?;
         }
 
         Ok(())
     }
 
-    fn print_metadata(&self, app: &LockedApp) {
-        println!("Application metadata: ");
-        for (k, v) in &app.metadata {
-            println!("      {}: {}", k, v);
+    fn print_metadata(&self, meta: &ValuesMap) -> Result<()> {
+        // TODO: because we're getting values from the values map,
+        // the strings are quoted. Deserializing them to strings will
+        // get rid of the extra quotes.
+        println!(
+            "Application name: {}@{}",
+            meta.get("name")
+                .context("expected application to have name in metadata")?,
+            meta.get("version")
+                .context("expected application to have version in metadata")?
+        );
+
+        if let Some(authors) = meta.get("authors") {
+            let authors: Vec<String> = serde_json::from_value(authors.clone())?;
+            println!("Authors:");
+            for a in authors {
+                println!("   * {}", a);
+            }
+        };
+
+        if let Some(description) = meta.get("description") {
+            println!("{}", description);
         }
+
+        Ok(())
     }
 
     fn print_trigger(&self, trigger: &LockedTrigger) {
-        println!("Trigger: {:?}", trigger);
+        // TODO: printing the trigger configuration should be prettier.
+        println!(
+            "   * {} trigger: {}: {}",
+            trigger.trigger_type, trigger.id, trigger.trigger_config
+        );
     }
 
     fn print_variables(&self, variables: &LockedMap<Variable>) {
-        println!("Variables: {:?}", variables);
+        if !variables.is_empty() {
+            println!("Variables:");
+            for (k, v) in variables {
+                println!("   * {}: {:?}", k, v);
+            }
+        }
     }
 
     fn print_host_requirements(&self, requirements: &ValuesMap) {
-        println!("Host Requirements: {:?}", requirements);
+        if !requirements.is_empty() {
+            println!("Host Requirements: {:?}", requirements);
+        }
     }
 
-    fn print_component(&self, component: &LockedComponent) {
-        println!("{:?}", component);
-    }
+    fn print_component(&self, component: &LockedComponent) -> Result<()> {
+        println!("Component {}", component.id);
+        if !component.metadata.is_empty() {
+            let meta = &component.metadata;
+            if let Some(description) = meta.get("description") {
+                println!("   Description: {}", description);
+            };
 
-    pub async fn print_info_local(&self, app: PathBuf) -> Result<()> {
-        println!("Getting info for app {:?}", app);
+            println!("   This application is allowed to access:");
+
+            let allowed_outbound_hosts = match meta.get("allowed_outbound_hosts") {
+                Some(allowed_outbound_hosts) => allowed_outbound_hosts.to_string(),
+                None => "None".to_string(),
+            };
+            println!(
+                "      * allowed outbound network hosts: {}",
+                allowed_outbound_hosts
+            );
+
+            let key_value_stores = match meta.get("key_value_stores") {
+                Some(key_value_stores) => key_value_stores.to_string(),
+                None => "None".to_string(),
+            };
+            println!("      * allowed key/value stores: {}", key_value_stores);
+
+            let databases = match meta.get("databases") {
+                Some(databases) => databases.to_string(),
+                None => "None".to_string(),
+            };
+            println!("      * allowed databases: {}", databases);
+
+            let ai_models = match meta.get("ai_models") {
+                Some(ai_models) => ai_models.to_string(),
+                None => "None".to_string(),
+            };
+            println!("      * allowed AI models: {}", ai_models);
+
+            if let Some(build) = meta.get("build") {
+                println!(
+                    "   This component was built using the command: {}",
+                    build
+                        .get("command")
+                        .context("expected component build to have a command field")?
+                );
+            }
+        }
+
+        let source = &component.source;
+        println!("   The source for component {}", component.id);
+        println!("      * content type: {}", source.content_type);
+        let size = std::fs::metadata(
+            source
+                .content
+                .source
+                .clone()
+                .expect("expected component to have wasm source")
+                .strip_prefix("file://")
+                .expect("expected source to be file URI"),
+        )?
+        .size() as f64;
+        println!("      * file size: {}", human_bytes(size));
+
         Ok(())
+    }
+
+    pub async fn print_info_local(&self, _app: PathBuf) -> Result<()> {
+        todo!("Printing information about a local application not implemented yet");
     }
 
     fn app_source(&self) -> AppSource {
