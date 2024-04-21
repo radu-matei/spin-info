@@ -11,6 +11,7 @@ use spin_locked_app::{
 };
 use spin_oci::OciLoader;
 use tempfile::TempDir;
+use walkdir::WalkDir;
 
 /// Get information about a Spin applicaton's metadata.
 #[derive(Parser, Clone, Debug)]
@@ -42,7 +43,8 @@ impl InfoCommand {
             .context("cannot create registry client")?;
 
         let working_dir = TempDir::with_prefix("spin-info-")?;
-        let locked_app = OciLoader::new(working_dir.path())
+        // TODO: because using `into_path()` here, the tmeporary directory is no longer cleaned up.
+        let locked_app = OciLoader::new(working_dir.into_path())
             .load_app(&mut client, &app)
             .await?;
 
@@ -172,6 +174,38 @@ impl InfoCommand {
         )?
         .size() as f64;
         println!("      * file size: {}", human_bytes(size));
+
+        if !&component.env.is_empty() {
+            println!("   Environment variables:");
+            for (k, v) in &component.env {
+                println!("      * {}={}", k, v);
+            }
+        }
+
+        if !&component.files.is_empty() {
+            println!("   Files:");
+            for f in &component.files {
+                let mut count = 0;
+                let mut size = 0;
+                let path = &f.content.source.clone().expect("expected content source");
+                for e in WalkDir::new(
+                    path.strip_prefix("file://")
+                        .expect("expected file source to be a file URI"),
+                ) {
+                    let e = e?;
+                    if e.file_type().is_file() {
+                        count += 1;
+                        size += e.metadata()?.size();
+                    }
+                }
+                println!(
+                    "      * {} files mounted at path {:?}, {} in total",
+                    count,
+                    f.path,
+                    human_bytes(size as f64)
+                );
+            }
+        }
 
         Ok(())
     }
