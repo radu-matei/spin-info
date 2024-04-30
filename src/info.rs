@@ -1,7 +1,7 @@
 use std::{os::unix::fs::MetadataExt, path::PathBuf};
 
 use crate::app_source::AppSource;
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context, Ok, Result};
 use clap::Parser;
 use human_bytes::human_bytes;
 use spin_locked_app::{
@@ -12,6 +12,9 @@ use spin_locked_app::{
 use spin_oci::OciLoader;
 use tempfile::TempDir;
 use walkdir::WalkDir;
+use comfy_table::Table;
+use serde_json::Value;
+
 
 /// Get information about a Spin applicaton's metadata.
 #[derive(Parser, Clone, Debug)]
@@ -67,25 +70,15 @@ impl InfoCommand {
         // TODO: because we're getting values from the values map,
         // the strings are quoted. Deserializing them to strings will
         // get rid of the extra quotes.
-        println!(
-            "Application name: {}@{}",
-            meta.get("name")
-                .context("expected application to have name in metadata")?,
-            meta.get("version")
-                .context("expected application to have version in metadata")?
-        );
+        let mut table = Table::new();
+        table.set_header(vec!["Key", "Value"]);
 
-        if let Some(authors) = meta.get("authors") {
-            let authors: Vec<String> = serde_json::from_value(authors.clone())?;
-            println!("Authors:");
-            for a in authors {
-                println!("   * {}", a);
-            }
-        };
-
-        if let Some(description) = meta.get("description") {
-            println!("{}", description);
+        for(key, value) in meta.iter() {
+            table.add_row(vec![&key, &value.to_string()]);
         }
+
+        println!("Appliction Info");
+        println!("{}", table);
 
         Ok(())
     }
@@ -115,50 +108,52 @@ impl InfoCommand {
 
     fn print_component(&self, component: &LockedComponent) -> Result<()> {
         println!("Component {}", component.id);
-        if !component.metadata.is_empty() {
-            let meta = &component.metadata;
-            if let Some(description) = meta.get("description") {
-                println!("   Description: {}", description);
-            };
 
-            println!("   This application is allowed to access:");
+        let mut table = Table::new();
+        table.set_header(vec!["Field", "Value"]);
 
-            let allowed_outbound_hosts = match meta.get("allowed_outbound_hosts") {
-                Some(allowed_outbound_hosts) => allowed_outbound_hosts.to_string(),
+        fn value_to_string(value: Option<&Value>) -> String {
+            match value {
+                Some(v) => match v {
+                    Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                },
                 None => "None".to_string(),
-            };
-            println!(
-                "      * allowed outbound network hosts: {}",
-                allowed_outbound_hosts
-            );
-
-            let key_value_stores = match meta.get("key_value_stores") {
-                Some(key_value_stores) => key_value_stores.to_string(),
-                None => "None".to_string(),
-            };
-            println!("      * allowed key/value stores: {}", key_value_stores);
-
-            let databases = match meta.get("databases") {
-                Some(databases) => databases.to_string(),
-                None => "None".to_string(),
-            };
-            println!("      * allowed databases: {}", databases);
-
-            let ai_models = match meta.get("ai_models") {
-                Some(ai_models) => ai_models.to_string(),
-                None => "None".to_string(),
-            };
-            println!("      * allowed AI models: {}", ai_models);
-
-            if let Some(build) = meta.get("build") {
-                println!(
-                    "   This component was built using the command: {}",
-                    build
-                        .get("command")
-                        .context("expected component build to have a command field")?
-                );
             }
         }
+
+        table.add_row(vec![
+            "Description", 
+            &value_to_string(component.metadata.get("description"))
+        ]);
+        table.add_row(vec![
+            "Allowed Outbound Hosts",
+            &value_to_string(component.metadata.get("allowed_outbound_hosts")),
+        ]);
+        table.add_row(vec![
+            "Allowed Key/Value Stores",
+            &value_to_string(component.metadata.get("key_value_stores"))
+                .replace("None", "[]"),
+        ]);
+        table.add_row(vec![
+            "Allowed Databases",
+            &value_to_string(component.metadata.get("databases"))
+                .replace("None", "[]"),
+        ]);
+        table.add_row(vec![
+            "Allowed AI Models",
+            &value_to_string(component.metadata.get("ai_models")),
+        ]);
+    
+        if let Some(build) = component.metadata.get("build") {
+            table.add_row(vec!["Build Command", build.get("command").map_or("None", |v| v.as_str().unwrap_or_default())]);
+        } else {
+            table.add_row(vec!["Build Command", "None"]);
+        }
+    
+        // Print component metadata table
+        println!("Component Information:");
+        println!("{}", table);
 
         let source = &component.source;
         println!("   The source for component {}", component.id);
